@@ -11,20 +11,22 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { Menu, Gem, ChevronDown, Loader2 } from "lucide-react";
 import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { onAuthStateChanged, signOut, type User } from "firebase/auth";
 import { auth, db } from "@/lib/firebase";
 import { doc, getDoc } from "firebase/firestore";
+import type { Seller, Buyer } from "@/lib/types";
 
 
 const Logo = () => (
   <Link href="/" className="flex items-center gap-2">
     <Gem className="h-7 w-7 text-primary" />
     <span className="text-2xl font-headline font-bold text-primary">
-      HairConnect
+      HairBuySell
     </span>
   </Link>
 );
@@ -33,67 +35,109 @@ const navLinks = [
   { href: "/products", label: "Products" },
   { href: "/sellers", label: "Sellers" },
   { href: "/buyers", label: "Buyers" },
+  { href: "/pricing", label: "Pricing" },
 ];
 
 export function Header() {
   const [isSheetOpen, setSheetOpen] = useState(false);
   const [user, setUser] = useState<User | null>(null);
-  const [userRole, setUserRole] = useState<'vendor' | 'admin' | null>(null);
+  const [userRole, setUserRole] = useState<'vendor' | 'admin' | 'buyer' | null>(null);
+  const [userProfile, setUserProfile] = useState<Partial<Seller | Buyer> | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const router = useRouter();
+  const pathname = usePathname();
 
   useEffect(() => {
+    const fetchUserRole = async (uid: string): Promise<{ role: 'vendor' | 'admin' | 'buyer' | null, profile: any | null }> => {
+        const sellerDocRef = doc(db, "sellers", uid);
+        const sellerDoc = await getDoc(sellerDocRef);
+        if (sellerDoc.exists()) {
+            return { role: "vendor", profile: { id: sellerDoc.id, ...sellerDoc.data() } as Seller };
+        }
+        
+        const buyerDocRef = doc(db, "buyers", uid);
+        const buyerDoc = await getDoc(buyerDocRef);
+        if (buyerDoc.exists()) {
+             return { role: "buyer", profile: { id: buyerDoc.id, ...buyerDoc.data() } };
+        }
+        
+        const adminDocRef = doc(db, "admins", uid);
+        const adminDoc = await getDoc(adminDocRef);
+        if (adminDoc.exists()) {
+            return { role: "admin", profile: { name: 'Admin', avatarUrl: '' } };
+        }
+
+        return { role: null, profile: null };
+    }
+
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       setIsLoading(true);
       if (currentUser) {
         setUser(currentUser);
-        // Determine user role
-        const sellerDoc = await getDoc(doc(db, "sellers", currentUser.uid));
-        if (sellerDoc.exists()) {
-          setUserRole("vendor");
+        const { role, profile } = await fetchUserRole(currentUser.uid);
+        
+        // Admin users do not need email verification to use their dashboard.
+        if (role === 'admin' || currentUser.emailVerified) {
+          setUserRole(role);
+          setUserProfile(profile);
         } else {
-          const adminDoc = await getDoc(doc(db, "admins", currentUser.uid));
-          if (adminDoc.exists()) {
-            setUserRole("admin");
-          } else {
-            setUserRole(null); // Should not happen if DB is consistent
-          }
+          // User is logged in but not verified
+          setUserRole(null);
+          setUserProfile(null);
         }
       } else {
         setUser(null);
         setUserRole(null);
+        setUserProfile(null);
       }
       setIsLoading(false);
     });
 
-    // Cleanup subscription on unmount
     return () => unsubscribe();
-  }, []);
+  }, [pathname]); // Re-run on route change to catch state after login/logout navigation
 
   const handleLogout = () => {
     signOut(auth).then(() => {
-      setSheetOpen(false); // Close mobile menu on logout
+      setSheetOpen(false);
       router.push("/");
     });
   };
 
-  const dashboardPath = userRole === "admin" ? "/admin/dashboard" : "/vendor/dashboard";
+  const getDashboardPath = () => {
+      switch (userRole) {
+          case "admin": return "/admin/dashboard";
+          case "vendor": return "/vendor/dashboard";
+          case "buyer": return "/buyer/dashboard";
+          default: return "/";
+      }
+  }
 
   const renderAuthSection = () => {
     if (isLoading) {
       return <Loader2 className="h-6 w-6 animate-spin" />;
     }
-
+    
+    // Check for userRole which is now correctly set for admins
     if (user && userRole) {
+       const dashboardPath = getDashboardPath();
+       const roleLabel = userRole.charAt(0).toUpperCase() + userRole.slice(1);
+       
        return (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="outline">
-                My Account <ChevronDown className="ml-2 h-4 w-4" />
+              <Button variant="ghost" className="flex items-center gap-2">
+                {userProfile?.avatarUrl && (
+                    <Avatar className="h-8 w-8">
+                        <AvatarImage src={userProfile.avatarUrl} alt={userProfile.name} />
+                        <AvatarFallback>{userProfile.name?.charAt(0) || 'A'}</AvatarFallback>
+                    </Avatar>
+                )}
+                <span>{userProfile?.companyName || userProfile?.name || 'My Account'}</span>
+                <ChevronDown className="h-4 w-4" />
               </Button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
-              <DropdownMenuLabel>Logged in as {userRole === 'admin' ? 'Admin' : 'Vendor'}</DropdownMenuLabel>
+              <DropdownMenuLabel>Logged in as {roleLabel}</DropdownMenuLabel>
               <DropdownMenuSeparator />
               <DropdownMenuItem asChild>
                 <Link href={dashboardPath}>My Dashboard</Link>
@@ -106,16 +150,17 @@ export function Header() {
     
     return (
        <Button variant="outline" asChild>
-          <Link href="/login">Login / Register</Link>
+          <Link href="/login">Login / Sign Up</Link>
         </Button>
     );
   }
   
   const renderMobileAuthSection = () => {
       if (isLoading) {
-          return null; // Or a loading indicator
+          return null;
       }
       if (user && userRole) {
+          const dashboardPath = getDashboardPath();
           return (
                <div className="flex flex-col gap-4">
                   <Button asChild size="lg" onClick={() => setSheetOpen(false)}>
@@ -128,9 +173,11 @@ export function Header() {
           )
       }
       return (
-         <Button variant="outline" asChild size="lg" onClick={() => setSheetOpen(false)}>
-            <Link href="/login">Login / Register</Link>
-          </Button>
+         <div className="flex flex-col gap-4">
+            <Button asChild size="lg" onClick={() => setSheetOpen(false)}>
+                <Link href="/login">Login / Sign Up</Link>
+            </Button>
+         </div>
       )
   }
 
@@ -171,6 +218,9 @@ export function Header() {
               </Button>
             </SheetTrigger>
             <SheetContent side="right" className="w-[300px] sm:w-[400px]">
+              <SheetHeader>
+                <SheetTitle className="sr-only">Navigation Menu</SheetTitle>
+              </SheetHeader>
               <div className="p-4">
                 <div className="mb-8">
                   <Logo />
